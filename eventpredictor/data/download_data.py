@@ -29,7 +29,44 @@ class BaseScraper:
             json.dump(response.json(), f)
 
     @staticmethod
-    def combine_csv_files(files_path, save_dir, file_name):
+    def download_data_from_date(date, save_path, url):
+        date_str = date.strftime("%Y-%m-%d")
+        file_name = date_str + ".json"
+        file_name = os.path.join(save_path, file_name)
+
+        if os.path.exists(file_name):
+            return None
+
+        BaseScraper.save_get_request_to_json(
+            url=url + date_str,
+            headers=BaseScraper.HEADERS,
+            file_name=file_name,
+            save_path=save_path,
+        )
+
+    @staticmethod
+    def multiprocess_files_convert(func, csv_dir, json_dir, stat=None):
+        pool = mp.Pool()
+        processes = [
+            pool.apply_async(
+                func,
+                args=(file, csv_dir, stat),
+            )
+            for file in glob.iglob(os.path.join(json_dir, "*.json"))
+        ]
+        for p in processes:
+            p.get()
+        
+        pool.close()
+        pool.join()
+
+    @staticmethod
+    def combine_csv_files(files_path, save_dir, file_name, force=False):
+        if not force and os.path.exists(os.path.join(save_dir, file_name)):
+            print(f"File {file_name} already exists at specified location.")
+            print("If you want to recreate it, pass 'force=True' as an argument.")
+            return None
+
         temp_dir = save_dir / "temp"
         os.makedirs(temp_dir, exist_ok=True)
 
@@ -68,49 +105,9 @@ class FootballScraper(BaseScraper):
     ODDS_URL = "https://api.sofascore.com/api/v1/sport/football/odds/1/"
     SINGLE_EVENT_URL = "https://api.sofascore.com/api/v1/event/"
 
-    def __init__(self, start_date, end_date, raw_data_dir):
-        self.start_date = start_date
-        self.end_date = end_date
-        self.raw_data_dir = raw_data_dir
-        self.make_paths()
-
-    def make_paths(self):
-        self.scheduled_events = self.raw_data_dir / "scheduled_events"
-        self.scheduled_events_json = self.scheduled_events / "json"
-        self.scheduled_events_csv = self.scheduled_events / "csv"
-
-        self.odds = self.raw_data_dir / "odds"
-        self.odds_json = self.odds / "json"
-        self.odds_csv = self.odds / "csv"
-
-        self.statistics = self.raw_data_dir / "statistics"
-        self.statistics_json = self.statistics / "json"
-        self.statistics_csv = self.statistics / "csv"
-
-        self.incidents = self.raw_data_dir / "incidents"
-        self.incidents_json = self.incidents / "json"
-        self.incidents_csv = self.incidents / "csv"
-
-        self.lineups = self.raw_data_dir / "lineups"
-        self.lineups_json = self.lineups / "json"
-        self.lineups_csv = self.lineups / "csv"
-
-    def download_data_from_date(self, date, save_path, url):
-        date_str = date.strftime("%Y-%m-%d")
-        file_name = date_str + ".json"
-        file_name = os.path.join(save_path, file_name)
-
-        if os.path.exists(file_name):
-            return None
-
-        self.save_get_request_to_json(
-            url=url + date_str,
-            headers=FootballScraper.HEADERS,
-            file_name=file_name,
-            save_path=save_path,
-        )
-
-    def json_to_csv(self, file, save_path, stat=None):
+    
+    @staticmethod
+    def json_to_csv(file, save_path, stat=None):
         file_name = file.split("/")[-1].split(".")[0] + ".csv"
         os.makedirs(save_path, exist_ok=True)
         save_path = os.path.join(save_path, file_name)
@@ -118,118 +115,154 @@ class FootballScraper(BaseScraper):
         if os.path.exists(save_path):
             return None
 
-        self.csv_to_json(
+        FootballScraper.csv_to_json(
             file_name=file,
             save_path=save_path,
             stat=stat,
         )
 
-    def multiprocess_files_convert(self, func, csv_dir, json_dir, stat=None):
-        pool = mp.Pool()
-        processes = [
-            pool.apply_async(
-                func,
-                args=(file, csv_dir, stat),
-            )
-            for file in glob.iglob(os.path.join(json_dir, "*.json"))
-        ]
-        for p in processes:
-            p.get()
-
-    def download_events(self):
-        for date in self.rangeofdates(self.start_date, self.end_date):
-            self.download_data_from_date(
-                date=date, save_path=self.scheduled_events_json, url=FootballScraper.EVENTS_URL
-            )
-
-    def convert_events(self):
-        self.multiprocess_files_convert(
-            func=self.json_to_csv,
-            csv_dir=self.scheduled_events_csv,
-            json_dir=self.scheduled_events_json,
+    @staticmethod
+    def download_event(date, save_path):
+        FootballScraper.download_data_from_date(
+            date=date, 
+            save_path=save_path, 
+            url=FootballScraper.EVENTS_URL
         )
 
-    def combine_events(self):
-        self.combine_csv_files(
-            files_path=os.path.join(self.scheduled_events_csv, "*.csv"),
-            save_dir=self.scheduled_events,
-            file_name="scheduled_events.csv",
-        )
-
-    def download_odds(self):
-        for date in self.rangeofdates(self.start_date, self.end_date):
-            self.download_data_from_date(
-                date=date, save_path=self.odds_json, url=FootballScraper.ODDS_URL
+    @staticmethod
+    def download_events(start_date, end_date, save_path):
+        print(f"Downloading events data for period {start_date} -> {end_date} ({int((end_date-start_date).days + 1)} days)...")
+        for date in FootballScraper.rangeofdates(start_date, end_date):
+            FootballScraper.download_event(
+                date=date, 
+                save_path=save_path 
             )
 
-    def conert_odds(self):
-        self.multiprocess_files_convert(
-            func=self.json_to_csv, csv_dir=self.odds_csv, json_dir=self.odds_json, stat="odds"
+    @staticmethod
+    def convert_events(source_dir, dest_dir):
+        print(f"{len(glob.glob(os.path.join(source_dir, '*')))} .json files to be converted...")
+        FootballScraper.multiprocess_files_convert(
+            func=FootballScraper.json_to_csv,
+            csv_dir=dest_dir,
+            json_dir=source_dir,
+        )
+        print(f"{len(glob.glob(os.path.join(dest_dir, '*')))} .json files converted and saved as .csv!")
+
+    @staticmethod
+    def combine_events(source_dir, dest_dir, output_file, force=False):
+        FootballScraper.combine_csv_files(
+            files_path=os.path.join(source_dir, "*.csv"),
+            save_dir=dest_dir,
+            file_name=output_file,
+            force=force
+        )
+    
+    @staticmethod
+    def download_single_date_odds(date, save_path):
+        FootballScraper.download_data_from_date(
+            date=date, 
+            save_path=save_path, 
+            url=FootballScraper.ODDS_URL
         )
 
-    def combine_odds(self):
-        self.combine_csv_files(
-            files_path=os.path.join(self.odds_csv, "*.csv"),
-            save_dir=self.odds,
-            file_name="odds.csv",
+    @staticmethod
+    def download_date_range_odds(start_date, end_date, save_path):
+        print(f"Downloading events data for period {start_date} -> {end_date} ({int((end_date-start_date).days + 1)} days)...")
+        for date in FootballScraper.rangeofdates(start_date, end_date):
+            FootballScraper.download_single_date_odds(
+                date=date, 
+                save_path=save_path
+            )
+
+    @staticmethod
+    def conert_odds(source_dir, dest_dir):
+        print(f"{len(glob.glob(os.path.join(source_dir, '*')))} .json files to be converted...")
+        FootballScraper.multiprocess_files_convert(
+            func=FootballScraper.json_to_csv, 
+            csv_dir=dest_dir, 
+            json_dir=source_dir, 
+            stat="odds"
+        )
+        print(f"{len(glob.glob(os.path.join(dest_dir, '*')))} .json files converted and saved as .csv!")
+
+    @staticmethod
+    def combine_odds(source_dir, dest_dir, output_file, force=False):
+        FootballScraper.combine_csv_files(
+            files_path=os.path.join(source_dir, "*.csv"),
+            save_dir=dest_dir,
+            file_name=output_file,
+            force=force
         )
 
-    def download_statistics(self):
-        self.download_stats(name_of_stat="statistics", json_dir=self.statistics_json)
+    @staticmethod
+    def download_statistics(save_dir, file_dir):
+        FootballScraper.download_stats(name_of_stat="statistics", json_dir=save_dir, file_dir=file_dir)
 
-    def convert_statistics(self):
-        self.multiprocess_files_convert(
-            func=self.json_to_csv,
-            csv_dir=self.statistics_csv,
-            json_dir=self.statistics_json,
+    @staticmethod
+    def convert_statistics(source_dir, dest_dir):
+        FootballScraper.multiprocess_files_convert(
+            func=FootballScraper.json_to_csv,
+            csv_dir=dest_dir,
+            json_dir=source_dir,
             stat="statistics",
         )
 
-    def combine_statistics(self):
-        self.combine_csv_files(
-            files_path=os.path.join(self.statistics_csv, "*.csv"),
-            save_dir=self.statistics,
-            file_name="statistics.csv",
+    @staticmethod
+    def combine_statistics(source_dir, dest_dir, output_file, force=False):
+        FootballScraper.combine_csv_files(
+            files_path=os.path.join(source_dir, "*.csv"),
+            save_dir=dest_dir,
+            file_name=output_file,
+            force=force
         )
 
-    def download_incidents(self):
-        self.download_stats(name_of_stat="incidents", json_dir=self.incidents_json)
+    @staticmethod
+    def download_incidents(save_dir, file_dir):
+        FootballScraper.download_stats(name_of_stat="incidents", json_dir=save_dir, file_dir=file_dir)
 
-    def convert_incidents(self):
-        self.multiprocess_files_convert(
-            func=self.json_to_csv,
-            csv_dir=self.incidents_csv,
-            json_dir=self.incidents_json,
+    @staticmethod
+    def convert_incidents(source_dir, dest_dir):
+        FootballScraper.multiprocess_files_convert(
+            func=FootballScraper.json_to_csv,
+            csv_dir=dest_dir,
+            json_dir=source_dir,
             stat="incidents",
         )
 
-    def combine_incidents(self):
-        self.combine_csv_files(
-            files_path=os.path.join(self.incidents_csv, "*.csv"),
-            save_dir=self.incidents,
-            file_name="incidents.csv",
+    @staticmethod
+    def combine_incidents(source_dir, dest_dir, output_file, force=False):
+        FootballScraper.combine_csv_files(
+            files_path=os.path.join(source_dir, "*.csv"),
+            save_dir=dest_dir,
+            file_name=output_file,
+            force=force
         )
 
-    def download_lineups(self):
-        self.download_stats(name_of_stat="lineups", json_dir=self.lineups_json)
+    @staticmethod
+    def download_lineups(save_dir, file_dir):
+        FootballScraper.download_stats(name_of_stat="lineups", json_dir=save_dir, file_dir=file_dir)
 
-    def convert_lineups(self):
-        self.multiprocess_files_convert(
-            func=self.json_to_csv,
-            csv_dir=self.lineups_csv,
-            json_dir=self.lineups_json,
+    @staticmethod
+    def convert_lineups(source_dir, dest_dir):
+        FootballScraper.multiprocess_files_convert(
+            func=FootballScraper.json_to_csv,
+            csv_dir=dest_dir,
+            json_dir=source_dir,
             stat="lineups",
         )
 
-    def combine_lineups(self):
-        self.combine_csv_files(
-            files_path=os.path.join(self.lineups_csv, "*.csv"),
-            save_dir=self.lineups,
-            file_name="lineups.csv",
+    @staticmethod
+    def combine_lineups(source_dir, dest_dir, output_file, force=False):
+        FootballScraper.combine_csv_files(
+            files_path=os.path.join(source_dir, "*.csv"),
+            save_dir=dest_dir,
+            file_name=output_file,
+            force=force
         )
 
-    def download_stats(self, name_of_stat, json_dir):
-        downloads_df = pd.read_csv(os.path.join(self.raw_data_dir, "to_download.csv"))
+    @staticmethod
+    def download_stats(name_of_stat, json_dir, file_dir):
+        downloads_df = pd.read_csv(os.path.join(file_dir, "to_download.csv"))
         statistics_ids = downloads_df.loc[
             (downloads_df[name_of_stat] == 0) & (downloads_df[f"{name_of_stat}_status_code"] == 0),
             "id",
@@ -241,7 +274,7 @@ class FootballScraper(BaseScraper):
             if os.path.exists(save_path):
                 continue
 
-            url = self.SINGLE_EVENT_URL + str(id) + f"/{name_of_stat}"
+            url = FootballScraper.SINGLE_EVENT_URL + str(id) + f"/{name_of_stat}"
             response = requests.get(url, headers=FootballScraper.HEADERS)
             data = response.json()
             status_code = response.status_code
@@ -262,12 +295,11 @@ class FootballScraper(BaseScraper):
                     [f"{name_of_stat}_error", f"{name_of_stat}_status_code"],
                 ] = (1, status_code)
 
-        downloads_df.to_csv(os.path.join(self.raw_data_dir, "to_download.csv"), index=False)
+        downloads_df.to_csv(os.path.join(file_dir, "to_download.csv"), index=False)
 
-    def generate_download_file(
-        self, countries_to_remove=None, status_to_keep=None, min_no_events=2000
-    ):
-        if os.path.exists(os.path.join(self.raw_data_dir, "to_download.csv")):
+    @staticmethod
+    def generate_download_file(save_dir, events_dir, output_file, countries_to_remove=None, status_to_keep=None, min_no_events=2000):
+        if os.path.exists(os.path.join(save_dir, output_file)):
             print("File exists already.")
             return None
 
@@ -279,7 +311,7 @@ class FootballScraper(BaseScraper):
             "status_type",
         ]
         events_df = pd.read_csv(
-            os.path.join(self.scheduled_events, "scheduled_events.csv"), usecols=cols_to_select
+            os.path.join(events_dir, "scheduled_events.csv"), usecols=cols_to_select
         )
         events_df = events_df.drop_duplicates()
         if countries_to_remove is not None:
@@ -314,7 +346,7 @@ class FootballScraper(BaseScraper):
         events_df[["incidents", "incidents_status_code", "incidents_error"]] = 0
         events_df[["lineups", "lineups_status_code", "lineups_error"]] = 0
 
-        events_df.to_csv(os.path.join(self.raw_data_dir, "to_download.csv"), index=False)
+        events_df.to_csv(os.path.join(save_dir, output_file), index=False)
 
     @staticmethod
     def csv_to_json(file_name, save_path, stat=None):
